@@ -1,0 +1,9 @@
+flask>=3.0.0
+flask-cors>=4.0.0
+openai>=1.30.0
+Pillow>=10.0.0
+numpy>=1.24.0
+diffusers>=0.27.0
+transformers>=4.38.0
+accelerate>=0.27.0
+# segment-anything installed via pip from github in colab

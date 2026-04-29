@@ -2,8 +2,6 @@
 Service: Segmentation using HuggingFace GroundingDINO + SAM
 Uses: IDEA-Research/grounding-dino-base  (transformers, zero compilation)
       segment-anything pip package for precise masks
-
-No C++ build required — pure pip installs.
 """
 
 import logging
@@ -15,7 +13,6 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# ── Lazy model cache ──────────────────────────────────────────────────────────
 _gdino_processor = None
 _gdino_model     = None
 _sam_predictor   = None
@@ -25,7 +22,6 @@ _models_loaded   = False
 def _load_gdino():
     from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
     import torch
-
     model_id = os.environ.get("GDINO_MODEL_ID", "IDEA-Research/grounding-dino-base")
     device   = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Loading GroundingDINO ({model_id}) on {device}...")
@@ -41,7 +37,7 @@ def _load_sam():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
         from segment_anything import sam_model_registry, SamPredictor
-        checkpoint = os.environ.get("SAM_CHECKPOINT", "weights/sam_vit_h_4b8939.pth")
+        checkpoint = os.environ.get("SAM_CHECKPOINT", "/content/weights/sam_vit_h_4b8939.pth")
         model_type = os.environ.get("SAM_MODEL_TYPE", "vit_h")
         if not os.path.exists(checkpoint):
             logger.warning(f"SAM checkpoint not found at {checkpoint}")
@@ -62,14 +58,12 @@ def _ensure_models():
         try:
             _gdino_processor, _gdino_model = _load_gdino()
         except Exception as e:
-            logger.warning(f"GroundingDINO load failed: {e} — using fallback")
+            logger.warning(f"GroundingDINO load failed: {e} — bbox fallback mode")
             _gdino_processor = _gdino_model = None
         _sam_predictor = _load_sam()
         _models_loaded = True
     return _gdino_processor, _gdino_model, _sam_predictor
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _mask_to_b64(mask: np.ndarray) -> str:
     mask_uint8 = (mask.astype(bool) * 255).astype(np.uint8)
@@ -89,19 +83,14 @@ def _bbox_mask(image: Image.Image, bbox_frac=(0.2, 0.2, 0.5, 0.5)):
 
 
 def _gdino_detect(processor, model, image: Image.Image, text_prompt: str):
-    """Run HF GroundingDINO. Returns (bbox_pixels [x1,y1,x2,y2], score)."""
     import torch
     device = next(model.parameters()).device
-
-    # HF GroundingDINO requires prompt to end with '.'
     prompt = text_prompt.strip()
     if not prompt.endswith("."):
         prompt += "."
-
     inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = model(**inputs)
-
     w, h = image.size
     results = processor.post_process_grounded_object_detection(
         outputs,
@@ -110,12 +99,10 @@ def _gdino_detect(processor, model, image: Image.Image, text_prompt: str):
         text_threshold=0.25,
         target_sizes=[(h, w)],
     )[0]
-
     boxes  = results["boxes"]
     scores = results["scores"]
     if len(scores) == 0:
         return None, 0.0
-
     best  = scores.argmax().item()
     bbox  = [int(v) for v in boxes[best].tolist()]
     return bbox, round(scores[best].item(), 3)
@@ -130,8 +117,6 @@ def _sam_mask_from_bbox(predictor, image_array: np.ndarray, bbox: list) -> np.nd
     )
     return masks[scores.argmax()]
 
-
-# ── Public API ────────────────────────────────────────────────────────────────
 
 FALLBACK_FRACS = [
     (0.05, 0.05, 0.45, 0.45), (0.55, 0.05, 0.95, 0.45),
@@ -151,7 +136,7 @@ def segment_objects(image_path: str, swaps: list) -> list:
         prompt = swap.get("detection_prompt", swap.get("object", "object"))
         logger.info(f"Segmenting [{i+1}/{len(swaps)}]: '{prompt}'")
         try:
-            bbox, conf = (None, 0.0)
+            bbox, conf = None, 0.0
             if gdino_model is not None:
                 bbox, conf = _gdino_detect(processor, gdino_model, image, prompt)
 
